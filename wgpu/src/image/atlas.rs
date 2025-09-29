@@ -25,7 +25,7 @@ pub struct Atlas {
     texture: wgpu::Texture,
     texture_view: wgpu::TextureView,
     texture_bind_group: Arc<wgpu::BindGroup>,
-    texture_layout: wgpu::BindGroupLayout,
+    texture_layout: Arc<wgpu::BindGroupLayout>,
     layers: Vec<Layer>,
 }
 
@@ -33,7 +33,7 @@ impl Atlas {
     pub fn new(
         device: &wgpu::Device,
         backend: wgpu::Backend,
-        texture_layout: wgpu::BindGroupLayout,
+        texture_layout: Arc<wgpu::BindGroupLayout>,
     ) -> Self {
         Self::with_size(device, backend, texture_layout, DEFAULT_SIZE)
     }
@@ -41,7 +41,7 @@ impl Atlas {
     pub fn with_size(
         device: &wgpu::Device,
         backend: wgpu::Backend,
-        texture_layout: wgpu::BindGroupLayout,
+        texture_layout: Arc<wgpu::BindGroupLayout>,
         size: u32,
     ) -> Self {
         let size = size.min(MAX_SIZE);
@@ -85,7 +85,7 @@ impl Atlas {
         let texture_bind_group =
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("iced_wgpu::image texture atlas bind group"),
-                layout: &texture_layout,
+                layout: texture_layout.as_ref(),
                 entries: &[wgpu::BindGroupEntry {
                     binding: 0,
                     resource: wgpu::BindingResource::TextureView(&texture_view),
@@ -107,6 +107,19 @@ impl Atlas {
         &self.texture_bind_group
     }
 
+    #[allow(dead_code)]
+    pub fn layer_count(&self) -> usize {
+        self.layers.len()
+    }
+
+    /// Returns a clone of the texture bind group layout used by the atlas.
+    ///
+    /// Note: `wgpu::BindGroupLayout` is a handle type and implements `Clone`.
+    /// We expose a cloned handle so callers can create their own bind groups
+    /// or wrap it as needed without sharing ownership state.
+    pub fn bind_group_layout(&self) -> &Arc<wgpu::BindGroupLayout> {
+        &self.texture_layout
+    }
     pub fn upload(
         &mut self,
         device: &wgpu::Device,

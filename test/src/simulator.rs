@@ -316,7 +316,16 @@ impl Snapshot {
         };
 
         if path.exists() {
-            let saved_hash = fs::read_to_string(&path)?;
+            let saved_hash = fs::read_to_string(&path)?.trim().to_string();
+
+            if hash != saved_hash {
+                println!(
+                    "snapshot hash mismatch: expected {} got {} ({})",
+                    saved_hash,
+                    hash,
+                    path.display()
+                );
+            }
 
             Ok(hash == saved_hash)
         } else {

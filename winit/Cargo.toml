@@ -23,6 +23,7 @@ wayland-dlopen = ["winit/wayland-dlopen"]
 wayland-csd-adwaita = ["winit/wayland-csd-adwaita"]
 unconditional-rendering = []
 linux-theme-detection = ["dep:mundy", "mundy/async-io", "mundy/color-scheme"]
+wayland-hack = []
 
 [dependencies]
 iced_debug.workspace = true

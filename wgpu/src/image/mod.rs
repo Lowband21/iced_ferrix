@@ -1,5 +1,5 @@
-pub(crate) mod cache;
-pub(crate) use cache::Cache;
+mod cache;
+pub use cache::{AtlasRegion, Cache};
 
 mod atlas;
 
@@ -29,7 +29,7 @@ pub struct Pipeline {
     backend: wgpu::Backend,
     nearest_sampler: wgpu::Sampler,
     linear_sampler: wgpu::Sampler,
-    texture_layout: wgpu::BindGroupLayout,
+    texture_layout: Arc<wgpu::BindGroupLayout>,
     constant_layout: wgpu::BindGroupLayout,
 }
 
@@ -86,8 +86,8 @@ impl Pipeline {
                 ],
             });
 
-        let texture_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let texture_layout = Arc::new(device.create_bind_group_layout(
+            &wgpu::BindGroupLayoutDescriptor {
                 label: Some("iced_wgpu::image texture atlas layout"),
                 entries: &[wgpu::BindGroupLayoutEntry {
                     binding: 0,
@@ -101,13 +101,17 @@ impl Pipeline {
                     },
                     count: None,
                 }],
-            });
+            },
+        ));
 
         let layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("iced_wgpu::image pipeline layout"),
                 push_constant_ranges: &[],
-                bind_group_layouts: &[&constant_layout, &texture_layout],
+                bind_group_layouts: &[
+                    &constant_layout,
+                    texture_layout.as_ref(),
+                ],
             });
 
         let shader =

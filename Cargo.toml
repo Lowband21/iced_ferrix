@@ -83,6 +83,12 @@ unconditional-rendering = ["iced_winit/unconditional-rendering"]
 sipper = ["iced_runtime/sipper"]
 # Enables Linux system theme detection
 linux-theme-detection = ["iced_winit/linux-theme-detection"]
+# Prefers extended color surfaces when available on wgpu backends
+prefer_10bit = ["iced_renderer/prefer_10bit"]
+# Enables renderer-driven batching for custom primitives
+batch = ["iced_wgpu/batch", "dep:image"]
+# Enables Wayland-specific compositor hooks for subsurface integrations
+wayland-hack = ["iced_winit/wayland-hack"]
 
 [dependencies]
 iced_debug.workspace = true

@@ -100,46 +100,139 @@ impl Compositor {
 
         log::info!("Selected: {:#?}", adapter.get_info());
 
-        let (format, alpha_mode) = compatible_surface
-            .as_ref()
-            .and_then(|surface| {
-                let capabilities = surface.get_capabilities(&adapter);
+        let (format, alpha_mode) =
+            compatible_surface
+                .as_ref()
+                .and_then(|surface| {
+                    let capabilities = surface.get_capabilities(&adapter);
 
-                let mut formats = capabilities.formats.iter().copied();
+                    let formats: Vec<wgpu::TextureFormat> =
+                        capabilities.formats.to_vec();
 
-                log::info!("Available formats: {formats:#?}");
+                    log::info!("Available formats: {formats:#?}");
 
-                let format = if color::GAMMA_CORRECTION {
-                    formats.find(wgpu::TextureFormat::is_srgb)
-                } else {
-                    formats.find(|format| !wgpu::TextureFormat::is_srgb(format))
-                };
+                    #[inline]
+                    fn matches_gamma(format: wgpu::TextureFormat) -> bool {
+                        if color::GAMMA_CORRECTION {
+                            wgpu::TextureFormat::is_srgb(&format)
+                        } else {
+                            !wgpu::TextureFormat::is_srgb(&format)
+                        }
+                    }
 
-                let format = format.or_else(|| {
-                    log::warn!("No format found!");
+                    #[cfg(any(feature = "prefer_10bit", feature = "hdr"))]
+                    #[inline]
+                    fn format_priority(
+                        format: wgpu::TextureFormat,
+                        prefer_hdr: bool,
+                    ) -> u8 {
+                        match format {
+                            wgpu::TextureFormat::Rgb10a2Unorm => {
+                                if prefer_hdr {
+                                    120
+                                } else {
+                                    140
+                                }
+                            }
+                            wgpu::TextureFormat::Rgb10a2Uint => {
+                                if prefer_hdr {
+                                    110
+                                } else {
+                                    130
+                                }
+                            }
+                            wgpu::TextureFormat::Rgba16Float => {
+                                if prefer_hdr {
+                                    160
+                                } else {
+                                    100
+                                }
+                            }
+                            wgpu::TextureFormat::Rg11b10Ufloat => {
+                                if prefer_hdr { 150 } else { 90 }
+                            }
+                            wgpu::TextureFormat::Rgba16Unorm => 95,
+                            _ => 0,
+                        }
+                    }
 
-                    capabilities.formats.first().copied()
-                });
+                    let mut format = {
+                        #[cfg(any(feature = "prefer_10bit", feature = "hdr"))]
+                        {
+                            let prefer_hdr = cfg!(feature = "hdr");
+                            let mut best: Option<(wgpu::TextureFormat, u8)> =
+                                None;
 
-                let alpha_modes = capabilities.alpha_modes;
+                            for &candidate in &formats {
+                                if !matches_gamma(candidate) {
+                                    continue;
+                                }
 
-                log::info!("Available alpha modes: {alpha_modes:#?}");
+                                let priority =
+                                    format_priority(candidate, prefer_hdr);
 
-                let preferred_alpha = if alpha_modes
-                    .contains(&wgpu::CompositeAlphaMode::PostMultiplied)
-                {
-                    wgpu::CompositeAlphaMode::PostMultiplied
-                } else if alpha_modes
-                    .contains(&wgpu::CompositeAlphaMode::PreMultiplied)
-                {
-                    wgpu::CompositeAlphaMode::PreMultiplied
-                } else {
-                    wgpu::CompositeAlphaMode::Auto
-                };
+                                if priority > best.map(|(_, p)| p).unwrap_or(0)
+                                {
+                                    best = Some((candidate, priority));
+                                }
+                            }
 
-                format.zip(Some(preferred_alpha))
-            })
-            .ok_or(Error::IncompatibleSurface)?;
+                            if let Some((candidate, _)) = best {
+                                Some(candidate)
+                            } else {
+                                formats
+                                    .iter()
+                                    .copied()
+                                    .filter(|format| {
+                                        format_priority(*format, prefer_hdr) > 0
+                                    })
+                                    .max_by_key(|format| {
+                                        format_priority(*format, prefer_hdr)
+                                    })
+                            }
+                        }
+
+                        #[cfg(not(any(
+                            feature = "prefer_10bit",
+                            feature = "hdr"
+                        )))]
+                        {
+                            None
+                        }
+                    };
+
+                    if format.is_none() {
+                        format = formats
+                            .iter()
+                            .copied()
+                            .find(|format| matches_gamma(*format));
+                    }
+
+                    let format = format.or_else(|| {
+                        log::warn!("No format found!");
+
+                        capabilities.formats.first().copied()
+                    });
+
+                    let alpha_modes = capabilities.alpha_modes;
+
+                    log::info!("Available alpha modes: {alpha_modes:#?}");
+
+                    let preferred_alpha = if alpha_modes
+                        .contains(&wgpu::CompositeAlphaMode::PostMultiplied)
+                    {
+                        wgpu::CompositeAlphaMode::PostMultiplied
+                    } else if alpha_modes
+                        .contains(&wgpu::CompositeAlphaMode::PreMultiplied)
+                    {
+                        wgpu::CompositeAlphaMode::PreMultiplied
+                    } else {
+                        wgpu::CompositeAlphaMode::Auto
+                    };
+
+                    format.zip(Some(preferred_alpha))
+                })
+                .ok_or(Error::IncompatibleSurface)?;
 
         log::info!(
             "Selected format: {format:?} with alpha mode: {alpha_mode:?}"

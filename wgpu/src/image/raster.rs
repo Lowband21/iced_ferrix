@@ -120,4 +120,18 @@ impl Cache {
         self.hits.clear();
         self.should_trim = false;
     }
+
+    /// Returns the atlas entry for this handle, if it is uploaded to device.
+    /// Also records a hit so trimming logic keeps it alive this frame.
+    pub fn atlas_entry(
+        &mut self,
+        handle: &image::Handle,
+    ) -> Option<&atlas::Entry> {
+        let _ = self.hits.insert(handle.id());
+
+        self.map.get(&handle.id()).and_then(|memory| match memory {
+            Memory::Device { entry, .. } => Some(entry),
+            _ => None,
+        })
+    }
 }

@@ -1,0 +1,11 @@
+[package]
+name = "batched_image"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+iced.workspace = true
+iced.features = ["debug", "image", "advanced", "batch"]
+
+bytemuck.workspace = true
+iced_wgpu.workspace = true

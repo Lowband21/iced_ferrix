@@ -29,6 +29,9 @@ pub use winit;
 pub mod clipboard;
 pub mod conversion;
 
+/// Utilities for integrating with Wayland compositors when the `wayland-hack` feature is enabled.
+pub mod wayland_integration;
+
 mod error;
 mod proxy;
 mod window;
@@ -787,6 +790,23 @@ async fn run_instance<P>(
                             continue;
                         };
 
+                        #[cfg(all(
+                            target_os = "linux",
+                            feature = "wayland-hack"
+                        ))]
+                        let wayland_integration =
+                            window.wayland_integration().cloned();
+
+                        #[cfg(all(
+                            target_os = "linux",
+                            feature = "wayland-hack"
+                        ))]
+                        if wayland_integration.is_some() {
+                            crate::wayland_integration::wayland::set_current_wayland_integration(
+                                wayland_integration.clone(),
+                            );
+                        }
+
                         let physical_size = window.state.physical_size();
                         let mut logical_size = window.state.logical_size();
 
@@ -992,7 +1012,19 @@ async fn run_instance<P>(
                             &mut window.surface,
                             window.state.viewport(),
                             window.state.background_color(),
-                            || window.raw.pre_present_notify(),
+                            || {
+                                #[cfg(all(
+                                    target_os = "linux",
+                                    feature = "wayland-hack"
+                                ))]
+                                if let Some(integration) =
+                                    wayland_integration.as_ref()
+                                {
+                                    integration.trigger_pre_commit_hooks();
+                                }
+
+                                window.raw.pre_present_notify();
+                            },
                         ) {
                             Ok(()) => {
                                 present_span.finish();
@@ -1019,6 +1051,11 @@ async fn run_instance<P>(
                                 }
                             },
                         }
+
+                        #[cfg(all(target_os = "linux", feature = "wayland-hack"))]
+                        crate::wayland_integration::wayland::set_current_wayland_integration(
+                            None,
+                        );
                     }
                     event::Event::WindowEvent {
                         event: window_event,

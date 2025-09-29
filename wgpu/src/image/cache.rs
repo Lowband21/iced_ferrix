@@ -20,12 +20,19 @@ pub struct Cache {
     worker: Worker,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AtlasRegion {
+    pub uv_min: [f32; 2],
+    pub uv_max: [f32; 2],
+    pub layer: u32,
+}
+
 impl Cache {
     pub fn new(
         device: &wgpu::Device,
         _queue: &wgpu::Queue,
         backend: wgpu::Backend,
-        layout: wgpu::BindGroupLayout,
+        layout: Arc<wgpu::BindGroupLayout>,
         _shell: &Shell,
     ) -> Self {
         #[cfg(all(feature = "image", not(target_arch = "wasm32")))]
@@ -88,6 +95,14 @@ impl Cache {
 
         #[cfg(not(target_arch = "wasm32"))]
         self.worker.load(handle);
+    }
+
+    pub fn texture_layout(&self) -> Arc<wgpu::BindGroupLayout> {
+        Arc::clone(self.atlas.bind_group_layout())
+    }
+
+    pub fn bind_group(&self) -> &Arc<wgpu::BindGroup> {
+        self.atlas.bind_group()
     }
 
     #[cfg(feature = "image")]
@@ -266,6 +281,33 @@ impl Cache {
         None
     }
 
+    #[cfg(feature = "image")]
+    pub fn ensure_raster_region(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        belt: &mut wgpu::util::StagingBelt,
+        handle: &core::image::Handle,
+    ) -> Option<AtlasRegion> {
+        let (entry, _bind_group) =
+            self.upload_raster(device, encoder, belt, handle)?;
+        Some(Self::region_from_entry(entry))
+    }
+
+    #[cfg(feature = "image")]
+    pub fn cached_raster_region(
+        &mut self,
+        handle: &core::image::Handle,
+    ) -> Option<AtlasRegion> {
+        self.receive();
+
+        // Record cache hits so atlas entries persist across trims.
+        self.raster
+            .cache
+            .atlas_entry(handle)
+            .map(Self::region_from_entry)
+    }
+
     #[cfg(feature = "svg")]
     pub fn upload_vector(
         &mut self,
@@ -431,7 +473,7 @@ mod worker {
             device: &wgpu::Device,
             queue: &wgpu::Queue,
             backend: wgpu::Backend,
-            texture_layout: wgpu::BindGroupLayout,
+            texture_layout: Arc<wgpu::BindGroupLayout>,
             shell: &Shell,
         ) -> Self {
             let (jobs_sender, jobs_receiver) = mpsc::sync_channel(1_000);
@@ -492,7 +534,7 @@ mod worker {
         device: wgpu::Device,
         queue: wgpu::Queue,
         backend: wgpu::Backend,
-        texture_layout: wgpu::BindGroupLayout,
+        texture_layout: Arc<wgpu::BindGroupLayout>,
         shell: Shell,
         belt: wgpu::util::StagingBelt,
         jobs: mpsc::Receiver<Job>,
@@ -631,5 +673,184 @@ mod worker {
                 timeout: None,
             });
         }
+    }
+}
+
+impl Cache {
+    fn region_from_entry(entry: &atlas::Entry) -> AtlasRegion {
+        match entry {
+            atlas::Entry::Contiguous(allocation) => {
+                let (x, y) = allocation.position();
+                let size = allocation.size();
+                let layer = allocation.layer() as u32;
+                let atlas_size = allocation.atlas_size() as f32;
+
+                AtlasRegion {
+                    uv_min: [x as f32 / atlas_size, y as f32 / atlas_size],
+                    uv_max: [
+                        (x + size.width) as f32 / atlas_size,
+                        (y + size.height) as f32 / atlas_size,
+                    ],
+                    layer,
+                }
+            }
+            atlas::Entry::Fragmented { size, fragments } => {
+                if let Some(first) = fragments.first() {
+                    let (x, y) = first.position;
+                    let layer = first.allocation.layer() as u32;
+                    let atlas_size = first.allocation.atlas_size() as f32;
+
+                    AtlasRegion {
+                        uv_min: [x as f32 / atlas_size, y as f32 / atlas_size],
+                        uv_max: [
+                            (x + size.width) as f32 / atlas_size,
+                            (y + size.height) as f32 / atlas_size,
+                        ],
+                        layer,
+                    }
+                } else {
+                    AtlasRegion {
+                        uv_min: [0.0, 0.0],
+                        uv_max: [0.0, 0.0],
+                        layer: 0,
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(all(test, feature = "image"))]
+mod tests {
+    use super::*;
+    use crate::core::image::Handle;
+    use crate::graphics::Shell;
+
+    fn create_device() -> (wgpu::Device, wgpu::Queue, wgpu::Backend) {
+        let instance = wgpu::Instance::default();
+        let adapter = pollster::block_on(instance.request_adapter(
+            &wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::LowPower,
+                force_fallback_adapter: false,
+                compatible_surface: None,
+            },
+        ))
+        .expect("request adapter");
+
+        let backend = adapter.get_info().backend;
+
+        let descriptor = wgpu::DeviceDescriptor {
+            label: Some("batched-image-test-device"),
+            required_features: wgpu::Features::empty(),
+            required_limits: wgpu::Limits::default(),
+            memory_hints: wgpu::MemoryHints::default(),
+            ..Default::default()
+        };
+
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&descriptor))
+                .expect("request device");
+
+        (device, queue, backend)
+    }
+
+    fn create_layout(device: &wgpu::Device) -> Arc<wgpu::BindGroupLayout> {
+        Arc::new(device.create_bind_group_layout(
+            &wgpu::BindGroupLayoutDescriptor {
+                label: Some("test atlas layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float {
+                            filterable: true,
+                        },
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
+                        multisampled: false,
+                    },
+                    count: None,
+                }],
+            },
+        ))
+    }
+
+    fn solid_handle(seed: u8) -> Handle {
+        const WIDTH: u32 = 4;
+        const HEIGHT: u32 = 4;
+
+        let mut pixels = Vec::with_capacity((WIDTH * HEIGHT * 4) as usize);
+
+        for _ in 0..(WIDTH * HEIGHT) {
+            pixels.extend_from_slice(&[seed, 255 - seed, seed / 2, 255]);
+        }
+
+        Handle::from_rgba(WIDTH, HEIGHT, pixels)
+    }
+
+    #[test]
+    fn cached_regions_survive_trim_after_hit() {
+        let (device, queue, backend) = create_device();
+        let layout = create_layout(&device);
+        let shell = Shell::headless();
+        let mut cache = Cache::new(&device, &queue, backend, layout, &shell);
+
+        let handle = solid_handle(64);
+        let mut encoder =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("batched-image-test-encoder"),
+            });
+
+        let mut belt = wgpu::util::StagingBelt::new(2 * 1024 * 1024);
+        assert!(
+            cache
+                .ensure_raster_region(&device, &mut encoder, &mut belt, &handle)
+                .is_some()
+        );
+
+        belt.finish();
+        let submission = queue.submit([encoder.finish()]);
+        let _ = device.poll(wgpu::PollType::Wait {
+            submission_index: Some(submission),
+            timeout: None,
+        });
+        belt.recall();
+
+        // First frame trim: retains the allocation and resets cache bookkeeping.
+        cache.trim();
+
+        // Simulate a second frame: upload a new handle while touching the old
+        // one to register a cache hit before the next trim.
+        let new_handle = solid_handle(192);
+        let mut encoder =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("batched-image-test-encoder-second"),
+            });
+
+        assert!(
+            cache
+                .ensure_raster_region(
+                    &device,
+                    &mut encoder,
+                    &mut belt,
+                    &new_handle
+                )
+                .is_some()
+        );
+
+        belt.finish();
+        let submission = queue.submit([encoder.finish()]);
+        let _ = device.poll(wgpu::PollType::Wait {
+            submission_index: Some(submission),
+            timeout: None,
+        });
+        belt.recall();
+
+        assert!(cache.cached_raster_region(&handle).is_some());
+        assert!(cache.cached_raster_region(&new_handle).is_some());
+
+        cache.trim();
+
+        assert!(cache.cached_raster_region(&handle).is_some());
+        assert!(cache.cached_raster_region(&new_handle).is_some());
     }
 }

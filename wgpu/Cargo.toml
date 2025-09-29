@@ -24,6 +24,9 @@ svg = ["iced_graphics/svg", "resvg/text"]
 web-colors = ["iced_graphics/web-colors"]
 webgl = ["wgpu/webgl"]
 strict-assertions = []
+hdr = []
+prefer_10bit = []
+batch = []
 
 [dependencies]
 iced_debug.workspace = true
@@ -45,3 +48,6 @@ lyon.optional = true
 
 resvg.workspace = true
 resvg.optional = true
+
+[dev-dependencies]
+pollster = "0.3"
