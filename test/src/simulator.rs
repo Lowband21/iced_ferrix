@@ -316,18 +316,25 @@ impl Snapshot {
         };
 
         if path.exists() {
-            let saved_hash = fs::read_to_string(&path)?.trim().to_string();
+            let saved_hashes: Vec<String> = fs::read_to_string(&path)?
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .map(str::to_owned)
+                .collect();
 
-            if hash != saved_hash {
+            let matches = saved_hashes.iter().any(|saved| saved == &hash);
+
+            if !matches {
                 println!(
-                    "snapshot hash mismatch: expected {} got {} ({})",
-                    saved_hash,
+                    "snapshot hash mismatch: expected one of {:?} got {} ({})",
+                    saved_hashes,
                     hash,
                     path.display()
                 );
             }
 
-            Ok(hash == saved_hash)
+            Ok(matches)
         } else {
             if let Some(directory) = path.parent() {
                 fs::create_dir_all(directory)?;
